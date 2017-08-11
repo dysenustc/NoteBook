@@ -1,0 +1,79 @@
+MSCKF[1][2]
+MSCKF 最初由 Anastasios Mourikis 教授2007年发表于 IEEE Robotics and Automation，其学生 Mingyang Li 之后一直致力于改进该算法，现在MSCKF 2.0 版本在定位精度和状态一致性上都得到了很大的提升。不过MSCKF 有专利保护，暂时没有开源，github上的一些开源实现方式都没有完成的实现论文的算法。据称google tango里面使用的就是这种算法。
+MSCKF的流程可以分成三个部分：
+	状态传播（Propagation）：每获取一个新的IMU的测量值，更新EKF的状态向量和协方差矩阵；
+	图像处理：相机获取到一帧新的图像时，利用当前IMU的状态信息，估计出当前相机Pose信息，并将计算出的相机位姿加入状态向量，同时更新协方差矩阵（协方差矩阵的不确定度会增大）。图像的特征提取和匹配过程也会同时进行；
+	EKF更新：当得到图像的特征测量值之后，EKF的更新过程开始执行。EKF的更新过程可以通过两种情景触发。
+
+状态传播（Propagation）
+	在讨论状态传播之前，首先给出MSCKF状态向量的组成：X ̂_k=〖[〖X ̂_(〖IMU〗_k )〗^T,〖(_G^(C_1))q ̅  ̂ 〗^T,(_^G)q ̂_(C_1)^T ⋯〖(_G^(C_N))q ̅  ̂ 〗^T,(_^G)q ̂_(C_N)^T ]〗^T，其中，〖X ̂_(〖IMU〗_k )〗^T=[〖(_G^I)q ̅ 〗^T,b_g^T,(_^G)V_I^T ,b_a^T,(_^G)P_I^T ]，〖(_G^(C_i))q ̅  ̂ 〗^T,(_^G)q ̂_(C_i)^T 是相机位姿和位置的估计值，〖(_G^(C_1))q ̅  ̂ 〗^T表示从世界坐标系到IMU坐标系的四元数，(_^G)V_I^T ，(_^G)P_I^T 是IMU相对世界坐标系的速度和位置，b_g^T，b_a^T是IMU的陀螺仪和加速度计的偏差。
+	IMU的状态传播基于IMU的离散模型，离散模型则是时域模型的离散化结果，下面我们首先介绍IMU的时域模型：
+(_G^I)q ̅  ̇(t)= 1/2 Ω(ω(t)) (_G^I)q ̅(t)  ，b ̇_g (t)= n_ωg (t)
+G_(V_I (t) ) ̇ = G_a (t)，b ̇_a (t)= n_ωa (t)，G_(P_I (t) ) ̇ = G_(V_I ) (t)
+经过一系列推导我们可以得到下面的方程：
+X ̃  ̇_IMU=FX ̃_IMU+Gn_IMU
+n_IMU表示系统噪声，用一个12维的向量表示。最后F是一个15*15的矩阵，因为IMU状态向量有15维，G是一个15*12的矩阵。
+	得到IMU时域方程，已知IMU的采样周期T，我们可以采用龙格-库塔数字积分法进行采样。IMU状态向量与N个Pose组成真个EKF的状态向量。定义状态向量的协方差为：P_(k|k)= [■(P_(〖II〗_(k|k) )&P_(〖IC〗_(k|k) )@〖P_(〖IC〗_(k|k) )〗^T&P_(〖CC〗_(k|k) ) )]。P_(〖II〗_(k|k) )是IMU状态的15*15维的协方差矩阵，P_(〖CC〗_(k|k) )是相机Pose的6N*6N的协方差矩阵。P_(〖IC〗_(k|k) )是两者相关项。
+协方差矩阵的更新公式如下：
+P_(k|k)= [■(P_(〖II〗_(k+1|k) )&Φ(t_k+T,t_k)P_(〖IC〗_(k|k) )@〖P_(〖IC〗_(k|k) )〗^T 〖Φ(t_k+T,t_k)〗^T&P_(〖CC〗_(k|k) ) )]
+P_(〖II〗_(k+1|k) )需要通过李雅普诺夫方程来更新，Φ(t_k+T,t_k)则是通过数值积分得到。状态和协方差矩阵都进行递推，这一步就完成了。
+图像处理
+相机每获取一帧新的图像，则利用当前IMU的状态信息，估计出当前相机Pose信息，并将计算出的相机位姿加入状态向量，同时更新协方差矩阵（协方差矩阵的不确定度会增大）。状态更新方程如下：
+(_G^C)q ̅  ̂ = (_I^C)q ̅⨂ (_G^I)q ̅  ̂   and (_^G)P ̂_C = (_^G)P ̂_I +C_q ̂^T (_^I)P_C 
+(_I^C)q ̅ 表示IMU到camera的旋转变换，(_^I)P_C 是camera相对IMU坐标系的位置，这两个量都是已知的。
+将相机Pose加到状态向量后，协方差矩阵变化如下：
+P_(k|k)← [■(I_(6N+15)@J)] P_(k|k) [■(I_(6N+15)@J)]^T
+EKF更新
+当得到图像的特征测量值之后，EKF的更新过程开始执行。文章提出了一种更新状态估计值的测量方程，方程将位姿融入测量方程中，使得更新过程加入了视觉信息。
+Measurement Model
+传统的EKF-SLAM框架中，特征点的信息会加入到特征向量和协方差矩阵里,这种方法的缺点是特征点的信息会给一个初始深度和初始协方差，如果不正确的话，极容易导致后面不收敛，出现 inconsistent 的情况。MSCKF 维护一个 pose 的时间序列的 FIFO， 一个特征点在在滑动窗口的几个位姿都被观察到的话，就会在这几个位姿间建立约束，从而进行Update操作。如下图所示：
+ 
+图1 MSCKF观测方法
+假设M_j个位姿((_G^(G_i))q ̅ ，(_^G)P_(C_i )  )，i∈M_j都观测到了特征点f_j，对每一个位姿我们都可以用下面的模型来表示像素坐标：
+z_i^((j))=  1/(_^(C_i))Z_j   [■((_^(C_i))X_j @(_^(C_i))Y_j  )]+n_i^((j))
+同时(_^G)P_(f_j ) 又可以表达成下面的式子：
+(_^(C_i))P_(f_i ) = [■((_^(C_i))X_j @(_^(C_i))Y_j @(_^(C_i))Z_j  )]=C((_C_n^(G_i))q ̅ )((_^(C_n))P_(f_j ) - (_^(C_i))P_(C_n ) )
+其中C_n表示第一次看到特征f_j的camera frame。(_^(C_i))P_(C_n ) 表示当前frame相对第一帧的平移量，这样通过IMU估计得到的位姿我们可以得到一个(_^(C_i))P_(f_i ) 的一个估计(_^(C_i))P ̂_(f_i ) （使用到了逆深度参数化和高斯牛顿优化求解）。也就得到了z_i^((j))的一个估计量z ̂_i^((j))。我们定义残差：
+r_i^((j))=z_i^((j))  - z ̂_i^((j))
+然后将这个残差线性化，为了方便计算，再投影到左零空间，并使用QR分解求变换后的雅克比矩阵。
+EKF Update
+	根据上面的模型我们就可以更新协方差矩阵并计算卡尔曼增益，从而对我们的估计的状态进行校正。这里不列出具体的公式了。我们主要分析一下EKF Update 的触发条件。
+	Update可以由以下两个条件来触发：
+	当一个特征在一组frame中被观测到了，但是接下来的frame没有观测到这个特征，则在观测到的frame组中执行Update操作，这是主要的Update过程；
+	当相机获取到新的image时，会将估计到的Pose加入状态向量，但是如果加入Pose后超出了设定的滑动窗口的大小（N_max），则需要删除以前的Pose，论文中选择保留最久的Pose，因为他们认为最久的Pose包含的几何约束通常有更大的基线，也就会包含更多的位置信息，同时他们说明这在他们的实验中得到的验证。他们采用剔除的方法是，从倒数第二个开始，均匀的选择N_max/3个Poses，对这些Poses包含的特征进行Update。然后将这些Poses在滑动窗口中移除。
+参考文献：
+[1] Mourikis A I, Roumeliotis S I. A multi-state constraint Kalman filter for vision-aided inertial navigation[C]//Robotics and automation, 2007 IEEE international conference on. IEEE, 2007: 3565-3572.
+[2] Li M, Mourikis A I. High-precision, consistent EKF-based visual-inertial odometry[J]. The International Journal of Robotics Research, 2013, 32(6): 690-711.
+
+
+
+
+ROVIO[1][2][3]
+ROVIO是一个紧耦合，基于图像块的滤波实现的VIO。他的优点是：计算量小(EKF，稀疏的图像块)，但是对应不同的设备需要调参数，参数对精度很重要。没有闭环，没有Mapping线程。
+	ROVIO的主要流程是使用IMU数据传递滤波器的状态，在滤波器的更新阶段使用视觉信息来Update。主要的区别在于作者采用了一种新的fully robocentric representation(还没有理解) 状态表示法，它保证了所有的状态都可观，增强了滤波器的一致性。
+滤波器的状态参数如下：χ□(∶=)(r,v,q,b_f,b_w,c,z,μ_0,⋯,μ_N,ρ_0,⋯,ρ_N)
+r：IMU坐标系下robocentric position；
+v：IMU坐标系下robocentric velocity；
+q：IMU坐标系到世界坐标系下robocentric attitude；
+b_f：IMU加速度偏差；
+b_w：IMU陀螺仪偏差；
+c,z：IMU到camera的平移和旋转；
+μ_i：相机坐标系下特征i的bearing vertor；
+ρ_i：特征i的深度参数，采用的是逆深度参数。
+这实际上和我们之前介绍MSCKF的时候提到的一样，这是通常使用的一中状态表示法。但是ROVIO中的fully robocentric representation和bearing vector没有太理解。这也是作者主要做的改进。
+多层特征块的处理
+对每个frame，采用采样因子为2的下采样得到图像金字塔，对每层图像都提取8*8固定大小的图像块，以此来增加匹配的鲁棒性。同时这样可以直接使用稀疏直接法来估计特征光度误差。作者认为这里直接法匹配比重投影误差的鲁棒性更好。
+对图像金字塔I_l和给定的块特征P_l，光度误差方程可以表示如下：m表示光度误差的均值。这样可以得到帧间光度的变化。
+e_(l.j)=P_l (p_j )-I_l (〖ps〗_l-W_(p_j ) )-m，s_l=0.5
+	通过这个误差方程，可以构造最小二乘问题来进行块匹配，但是作者为了降低计算成本，采用了QR分解的方法。
+
+
+
+[1] Bloesch M, Omari S, Hutter M, et al. Robust visual inertial odometry using a direct EKF-based approach[C]//Intelligent Robots and Systems (IROS), 2015 IEEE/RSJ International Conference on. IEEE, 2015: 298-304.
+[2] Kelly J, Sukhatme G S. Visual-inertial sensor fusion: Localization, mapping and sensor-to-sensor self-calibration[J]. The International Journal of Robotics Research, 2011, 30(1): 56-79.
+[3] Civera J, Grasa O G, Davison A J, et al. 1-point RANSAC for EKF-based structure from motion[C]//Intelligent Robots and Systems, 2009. IROS 2009. IEEE/RSJ International Conference on. IEEE, 2009: 3498-3504.
+
+
+总结
+对以上这些VIO进行一个大致的分析后，可以发现VINS-Mono取得的效果是最好的，同时作者汲取了众多前人的经验，充分考虑了VIO初始化的问题，下面这段话我觉得也充分说明了一个鲁棒的VIO初始化的必要性和重要性。视觉和惯性单元是两个互补的信息，一个代表相对结构信息，另一个包含尺度增量信息。但是在没有很好的初始假定下很难将两者很好的融合。初始化不好会导致滤波器发散，也可能是优化陷入局部极小。相比较而言，在使用优化的方法中，OKVIS，最初是支持双目视觉的VIO算法，后面拓展到单目，VIORB最初是没有融合IMU数据的SLAM框架，融合IMU数据后除了解决了尺度问题，从数据上看，精确度并没有得到提升，同时，相比VINS-Mono，VIORB的初始化使用的trick显然更少。同时VINS-Mono孪生的还有相同算法的跑在IOS上的，这说明算法对手机的支持度也更高。不过基于优化的算法在计算成本上依旧很高，手机上运行的负荷多大还不好估计。
+至于基于滤波的VIO算法，MSCKF在长期的研究和改进中，它的效果应该是可以肯定的，但是因为专利保护，基于论文开发算法的工作难度还是蛮大的。ROVIO更像是在传统的视觉EKF上做的扩展，加上创新性的使用了图像块的光度信息，加上ETHZ_ASL实验室在直接法上的积累，效果应该得到了一定的提升，但是既然使用了光度信息，那么对于rolling shutter来说，这就带来了先天的劣势。
