@@ -1,0 +1,94 @@
+VIORB[1][2][3]
+VIORB-SLAM是在ORB-SLAM基础上融合IMU数据，所以视觉数据的处理基本和ORB-SLAM一致，整个框架也是包括三个进程，tracking，local mapping，loop closing。我们主要对VIORB-SLAM和ORB-SLAM在tracking，local mapping，loop closing的主要区别做一个分析，另外由于添加了IMU信息， 我们还需要对IMU的初始化进行分析。
+	VIORB输入数据处理
+	VIORB与ORB主要区别
+	IMU初始化分析
+VIORB输入数据处理
+对系统的图像数据我们需要进行一些处理才能进行跟踪和建图。对此我们需要对视觉和IMU简历合适的方程。
+
+通过下面的方程我们可以将相机坐标系的3D点投影到像素坐标系中的2D点。
+π(X_c )= [■(f_u  X_c/Z_c +c_u@f_v  Y_c/Z_c +c_v )],X_c=〖[X_c,Y_c,Z_c]〗^T
+关于IMU我们同样需要知道IMU的状态更新方程，由于VIORB采用的也是预积分的思想，我们这里不再具体介绍，原理上我们在前面已经分析过了。
+VIORB与ORB主要区别
+Tracking
+	相比ORB-SLAM的Tracking，我们Tracking的变量有传感器位姿，传感器速度和IMU偏差。相比ORB点对点的运动模型，VIORB可以更可靠地预测摄像头的位姿。整个流程如下图所示：
+
+
+
+
+
+
+
+
+
+
+
+图1 Tracking流程
+根据地图点是否被Local Mapping或Loop Closing更新，优化过程又可以分成下图不同的情况。我们做一个分析。
+ 
+图2 tracking情景
+	图a)表示在地图更新之后执行Tracking，IMU误差项连接当前帧j 和最后一个关键帧i ：优化变量是θ={R_WB^j,P_WB^j,V_WB^j,b_g^j,b_a^j}，对应的优化函数：（使用Gauss-Newton算法）
+θ^*=argmin┬θ⁡(∑_k▒〖E_proj (k,j)+ E_IMU (i,j)〗)
+其中，
+E_proj (k,j)= ρ(〖(x^k-π(X_C^k))〗^T Σ_k (x^k-π(X_C^k))
+X_C^k= R_CB R_BW^j (X_W^k-wP_B^j )+cP_B
+Σ_k表示信息矩阵。
+E_IMU (i,j)= ρ([e_R^T,e_V^T,e_P^T]Σ_I 〖[e_R^T,e_V^T 〖,e〗_P^T]〗^T )+ρ(e_b^T ∑_R▒e_b )
+e_R=log((ΔR_ij Exp(J_ΔR^g b_g^j))^T ) R_BW^i R_WB^j
+e_v= R_BW^i (V_WB^j- V_WB^i- g_w Δt_ij )-(ΔV_ij+J_ΔV^g b_g^j+J_ΔV^a b_a^j)
+e_P= R_BW^i (P_WB^j-P_WB^i- V_WB^i Δt_ij-1/2 g_w 〖Δt_ij〗^2 )-(ΔP_ij+J_ΔP^g b_g^j+J_ΔP^a b_a^j )
+e_b=b^j-b^i
+Σ_I表示预积分信息矩阵，ρ 表示Huber cost function（是凸的，可微的，对离群值有好的鲁棒性，是二次和线性的组合）。
+L_δ (a)= {■(1/2 a^2           for|a|  ≤δ @δ(|a|- 1/2 δ)           otherwise)┤
+ 
+图3 Huber函数
+图b)表示的是图a)优化之后的估计结果Hessian矩阵作为下一次优化的先验。
+图c)表示地图没有更新，则下一帧j+1的优化将使用之前优化得到的先验信息。优化变量是θ={R_WB^j,P_WB^j,V_WB^j,b_g^j,b_a^j,R_WB^(j+1),P_WB^(j+1),V_WB^(j+1),b_g^(j+1),b_a^(j+1)}，对应的优化函数增加了一部分先验误差：
+θ^*=argmin┬θ⁡(∑_k▒〖E_proj (k,j)+ E_IMU (i,j)〗+E_prior (j))
+E_prior (j)=ρ([e_R^T,e_V^T 〖,e〗_P^T,e_b^T]Σ_P 〖[e_R^T,e_V^T 〖,e〗_P^T,e_b^T]〗^T )
+e_R=log(R ̅_BW^j R_WB^j )
+e_v= V ̅_WB^j- V_WB^j
+e_P= P ̅_WB^j-P_WB^i
+e_b=b ̅^j-b^j
+R ̅_BW^j,V ̅_WB^j (,P) ̅_WB^j,b ̅^j表示在图b)中估计状态。
+图d)表frame j 被边缘化。后面的e-f重复c-d过程，且e-f一直重复下去，一直重复到地图变化或prior无效。
+Local Mapping
+在新的关键帧插入之后，Local Mapping线程执行BA，它优化最后的N个关键帧（Local Window）和这N关键帧可看到的所有MapPoints。下图比较了VIORB-SLAM Local BA和ORB-SLAM Local BA区别。可以看到的是VIORB中Local Window使用的是最近的N个关键帧，而ORB中使用的是covisibility graph。另外在VIORB中localBA和fullBA的差别主要是相邻关键帧的时间差阈值（LocalBA-0.5s，fullBA-3s）
+ 
+图4 LocalBA的区别
+Loop closing
+闭环检测的目的是为了减少累积漂移，它通过把最近的关键帧与过去的关键帧进行匹配来判断当前帧是否在地图中已经出现过。VIORB中闭环检测相比ORB减少了一个scale自由度，只有6DoF，因为融合了IMU后尺度是可观测的。
+
+IMU初始化
+VIORB初始化的思路是先运行单目SLAM算法一段时间，假设运动过程中所有的变量都是可观测的。那么就可以对陀螺仪偏差，加速度偏差尺度和重力向量进行估计。
+陀螺仪偏差估计
+	通过连续两个方向已知的关键帧进行估计：
+b_g=argmin┬(b_g )⁡(∑_(i=1)^(N-1)▒〖||Log((ΔR_(i,i+1) Exp(J_ΔR^g  b_g))^T R_BW^(i+1) R_WB^i )||〗^2 )
+N 表示关键帧数量，R_WB^((∙))=R_WC^((∙)) R_CB，R_WC^((∙))由ORB-SLAM计算，R_CB是已知的。
+ΔR_(i,i+1)表示连续两个关键帧间的陀螺仪积分。
+	假定初始值为0，使用Gauss_Newton方法求解可以得到b_g。
+尺度和重力近似
+当估计完陀螺仪偏差之后，就可以预积分：速度、位置。由于ORB-SLAM计算的摄像机轨迹的尺度是任意的，因此在摄像机坐标系与坐标系间变换需要加入一个尺度因子。即，
+P_WB=sP_WC+ R_WC P_CB
+把上面的方程带入前面预积分的位置方程，且忽略加速度偏差，有
+sP_WC^(i+1)= sP_WC^i+ V_WB^i+Δt_(i,i+1)+  1/2 g_W 〖Δt_(i,i+1)〗^2+R_WB^i ΔP_(i,i+1)+(R_WC^i-R_WC^(i+1))P_CB
+	我们要做的是通过上述方程求解s，g_W (3*1)，那么我们可以通过多个上述方程直接求解线性方程组得到。实际采用了连续关键帧来构建线性方程组，并且使用了SVD分解。（需要注意的是至少需要四个关键帧，因为待求变量有4个）
+加速度偏差估计，且优化尺度和重力方向
+到目前为止，我们都没有估计加速度偏差，在上面计算尺度和重力方向时我们也忽略了加速度偏差，这实际上尺度和重力方向都是有影响的。这里我们来估计加速度偏差，并且优化尺度和重力方向。
+在惯性坐标系下重力的方向可以表示成g ̂_I={0,0,-1}，我们上一步计算出的重力方向在世界坐标系下可以表示成g ̂_W=(g_W^*)⁄(||g_W^* ||)，我们可以计算出惯性系到世界系的旋转：
+R_WI=Exp(v ̂θ)
+v ̂=  (g ̂_I×g ̂_W)/(||g ̂_I×g ̂_W ||)
+θ=atan2(|(|g ̂_I×g ̂_W |)|，g ̂_I，g ̂_W)
+atan2返回的是原点至点(x,y)的方位角，即与x轴的夹角，单位弧度。
+	这样我们就得到了重力向量在世界坐标系下的表达式：
+g_W= R_WI g ̂_I G
+这样我们可以使用李代数下的扰动模型来进行优化。
+g_W= R_WI Exp(δθ)g ̂_I G
+δθ=〖[δθ_xy^T]〗^T,δθ_xy=〖[δθ_x,〖δθ〗_y]〗^T
+对g_W进行一阶近似，g_W≈R_WI g ̂_I G - R_WI 〖(g ̂_I)〗_× Gδθ，重新带入我们第一次求重力向量的方程，进行相似的计算后，我们可以得到s^*,δθ_xy^*,b_a^*。
+速度估计
+在scale，gravity和bias已知的情况下，关键帧的速度可以通过上面的速度方程进行计算。
+
+[1] Mur-Artal R, Tardós J D. Visual-inertial monocular SLAM with map reuse[J]. IEEE Robotics and Automation Letters, 2017, 2(2): 796-803.
+[2] Mur-Artal R, Montiel J M M, Tardos J D. ORB-SLAM: a versatile and accurate monocular SLAM system[J]. IEEE Transactions on Robotics, 2015, 31(5): 1147-1163.
+[3] Mur-Artal R, Tardós J D. ORB-SLAM2: An Open-Source SLAM System for Monocular, Stereo, and RGB-D Cameras[J]. IEEE Transactions on Robotics, 2017.
