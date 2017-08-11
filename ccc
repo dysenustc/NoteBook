@@ -1,0 +1,62 @@
+OKVIS[1][2]
+苏黎世联邦理工学院自主系统实验室2015年发表了基于关键帧的视觉惯性VIO框架OKVIS，OKVIS支持单目/双目视觉紧耦合IMU数据。采用滑窗滤波优化算法。下面结合发表的文章对OKVIS的框架和算法做一个分析，主要侧重Visual和IMU的融合。
+OKVIS从本质上看并不能算一个完成的SLAM系统，而更像是一个VIO的框架，因此它主要部分特征提取与匹配，滑窗优化以及边缘化。但是OKVIS的两篇文章对其涉及到的主要知识都做了详尽的解释，其中涉及众多推导，主要下面根据论文的框架来做一个分析： 
+1、视觉和IMU融合VIO的实现（Visual Inertial SLAM）：构造包含重投影误差和IMU误差的优化函数，推导了重投影误差的方程和IMU运动学偏差模型。
+2、特征检测与匹配（Keypoint Detection and Matching）:采用多尺度SSE-optimized Harris corner detector做角点检测，用BRISK特征描述子描述特征；特征匹配有3D-2D匹配(PnP)、2D-2D匹配(对极几何)；
+3、关键帧选取（Keyframe Selection）：如果当前帧匹配的特征点在图像中所占的面积不足一定的阈值，或者匹配的特征数目和检测到的特征点数目不足一定阈值，则认为是关键帧；
+4、关键帧边缘化（BA Marginalization）：首先介绍了边缘化的数学原理，然后分析了如何在VIO使用边缘化策略来优化计算复杂度，最后对论文中使用的边缘化流程作了分析。
+Section2：当前研究情况和本文关联点
+Section3：符号和定义
+Section4：visual误差分量和IMU测量值分析
+Section5：前端处理和初始化
+Section6：Keyframe和Marginalization
+Section7：数据集实验结果
+
+视觉和IMU融合VIO的实现
+首先定义了总体的优化损失函数，损失函数包括视觉重投影误差项和IMU误差。
+J(X)≔ ∑_(i=1)^I▒∑_(k=1)^K▒∑_(j∈(i,k))▒〖e_r^(i,j,k^T ) W_r^(i,j,k) e_r^(i,j,k)+ ∑_(k=1)^(K-1)▒〖e_s^(k^T ) W_s^k e_s^k 〗〗	(1)
+其中，i 表示相机索引，k 表示图像帧索引，j 表示特征点索引，W_r^(i,j,k) 表示特征的信息矩阵，W_s^k 表示IMU 偏差的信息矩阵。下面对重投影误差e_r^(i,j,k) 和IMU偏差e_s^k 做具体的推导。
+重投影误差
+	重投影误差可以表示成下面的形式，重投影中包含的优化变量有T_(C_i S)^k，T_SW^k，w^(l^i )：
+e_r^(i,j,k)= z^(i,j,k)- h_i (T_(C_i S)^k T_SW^k w^(l^i ))	(2)
+h_i 表示的是相机的投影模型，z^(i,j,k) 表示的是像素坐标系下的特征的像素坐标。T_(C_i S)^k 表示系统的位姿，T_SW^k 表示IMU和相机的外参矩阵，w^(l^i ) 是特征点的坐标。
+IMU误差
+文章中介绍了IMU的运动学方程，但是在实际中采用的也是预积分的思想，这里不再过多描述，但是文章推导基于的一个事实是IMU的采样频率要尽可能高于图像帧的频率这一点尤为重要（至少5倍以上），借用推导中使用的图来描述如下：
+ 
+特征检测与匹配（Keypoint Detection and Matching）
+	采用多尺度SSE-optimized Harris corner detector做角点检测，用BRISK特征描述子描述特征；在提取特征的过程中应该尽量使得特征均摊在图像平面上。
+在初始化和匹配前，先根据当前 IMU的测量值 propagate 上一次估计的状态值得到初始状态的不确定估计，假定特征匹配前已知部分特征点的3D位置是已知的（这一点我不是特别明白），首先执行3D-2D匹配，通过当前 IMU 测量值预测当前的位姿估计，根据当前的位姿估计对当前视角可见的特征点根据特征描述子做 brute-force 匹配（这里不用类似于ORB-SLAM用的 guided matching strategy，owing to the super-fast matching of binary descriptors，it would actually be more expensive to first look at image-space consistency）。误匹配特征的移除分为两步：第一步根据位姿预测的不确定计算 Mahalanobis 距离判断 3D 到 2D 的匹配是否有效；第二部通过 RANSAC 算法和 OpenGV 库来移除误匹配。
+然后再执行 2D-2D 的匹配，匹配在当前双目的左右图像中进行，同时也在当前帧和上一帧的图像中进行（当前帧的左图像和上一帧做图像匹配，当前帧右图像和上一帧右图像匹配），匹配也是先通过暴力的方式得到初始匹配，然后通过三角化计算特征的位置并且移除外点，通过三角化计算的特征只有不确定度足够低才被初始化。
+ 
+图1特征匹配结果
+下图是参考帧，上图是匹配帧，绿色的表示3D-2D匹配，黄色的表示2D-2D匹配，蓝色表示左右匹配特征点，红色表示未匹配点
+
+关键帧选取（Keyframe Selection）
+在特征匹配之后，前M帧关键帧和上S帧的位姿和这些帧产生的特征点的位置会被一起优化，如下图所示。M个关键帧选择的策略是：如果当前帧匹配的特征点在图像中所占的面积不足一定的阈值（论文中是50%），或者匹配的特征数目和检测到的特征点数目不足一定阈值（论文中是20%），则认为是关键帧。
+ 
+图2 优化窗口帧
+关键帧边缘化
+论文首先介绍了边缘化的数学基础，然后探讨了如何在VIO中引入边缘化策略。
+非线性优化中边缘化的数学基础
+对于如下的线性方程：
+[■(H_μμ&H_(μλ_1 )@H_(λ_1 μ)&H_(λ_1 λ_1 ) )][■(δχ_μ@δχ_λ )]=[■(b_μ@b_(λ_1 ) )]	(1)
+执行Schur complement之后，H_(λ_1 μ) H_μμ^(-1) H_(μλ_1 )就称为H_μμ在H_(μλ_1 )中的Schur complement，
+H_(λ_1 λ_1)^*≔H_(λ_1 λ_1 )-H_(λ_1 μ) H_μμ^(-1) H_(μλ_1 )	
+B_(λ_1)^*≔b_(λ_1 )-H_(λ_1 μ) H_μμ^(-1) b_μ	(2)
+我们可以得到下面的式子。
+H_(λ_1 λ_1)^* δχ_λ= B_(λ_1)^*	(3)
+这样我们就能够迭代的更新部分变量，从而维持计算量不增加。这是直观上Marginalization的概念，只更新部分变量，而不是所有变量。但是实际上并没有这么简单，要把一部分变量从多元高斯分布从分离出来，需要把协方差矩阵也给分开，然而协方差矩阵大家都知道，众多变量之间息息相关，不能简单地说协方差矩阵的哪一块就是谁的，需要用到schur complement来分割。这里不做过多的展开，详细的解释可以参看博客[3]。
+VIO中Marginalization的应用
+在初始化阶段（假设M=3,S=3），整个优化窗口有M+S帧图像。最开始的M帧都会被当做关键帧，Marginalization则会把开始M+1帧的speed/bias marginalize掉。如下图所示：
+ 
+图3 初始阶段Marginalization
+当新帧X_T^c加入优化窗口后，如果X_T^(c-S)不是关键帧，把X_T^(c-S)帧所有特征点的测量信息在优化中全部删除掉，然后把第X_T^(c-S)帧的位姿和speed/bias marginalize掉。如下图所示：
+ 
+图4 X_T^(c-S)帧不是关键帧时的Marginalization
+当X_T^(c-S)帧是关键帧时，这时 marginalize 掉最老的关键帧X_T^(k_1 )，同时marginalize掉在 KF1 中可见而在最近的关键帧和最新的帧不可见的特征。如下图所示：
+ 
+图5 X_T^(c-S)帧是关键帧时的Marginalization
+参考文献：
+[1] Leutenegger S, Lynen S, Bosse M, et al. Keyframe-based visual–inertial odometry using nonlinear optimization[J]. The International Journal of Robotics Research, 2015, 34(3): 314-334.
+[2] Leutenegger S, Lynen S, Bosse M, et al. Keyframe-based visual–inertial odometry using nonlinear optimization[J]. The International Journal of Robotics Research, 2015, 34(3): 314-334.
+[3] http://blog.csdn.net/heyijia0327/article/details/52822104
