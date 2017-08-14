@@ -18,3 +18,9 @@ https://labs.rokid.com/attachments/seminar1/127_V-SLAM_Intro.pdf
 ROVIO
 http://www.cnblogs.com/shhu1993/p/7003670.html
 https://arxiv.org/pdf/1606.05285.pdf
+
+Hello vonzy,
+I am trying testing some VIOs/v-slam on android, my goal is to analyse the result and consumption.
+and i have tested ORB_SLAM on android under FangGet's open source, now i want to test VINS，i have implemented
+collect camera and IMU data from my android to rosbag dataset, but its not working. i think unsynchronization is 
+the main  problem for my data. could you give me some advices and share you no-ros VINS project to me. Very appreciate~
